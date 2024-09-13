@@ -16,6 +16,7 @@ require __DIR__ . '/dbconnect.php';
 require __DIR__ . '/api/users.php';
 require __DIR__ . '/api/zones.php';
 require __DIR__ . '/api/booths.php';
-require __DIR__ . '/api/Admins.php';
+require __DIR__ . '/api/Reservations.php';
+require __DIR__ . '/api/Events.php';
 // รันแอปพลิเคชัน
 $app->run();

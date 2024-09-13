@@ -20,20 +20,17 @@ $app->get('/users', function (Request $request, Response $response, array $args)
     return $response->withHeader('Content-Type', 'application/json');
 });
 
-//Insert data by text (JSON format)
+//Insert
 $app->post('/users/insert', function (Request $request, Response $response, array $args) {
 
-    // รับข้อมูล JSON ที่ส่งมา
     $body = $request->getBody(); 
     $bodyArr = json_decode($body, true); // แปลงข้อมูล JSON เป็น associative array
     $conn = $GLOBALS['conn'];
     
-    // เตรียมคำสั่ง SQL สำหรับ insert ข้อมูลลงในตาราง users
     $stmt = $conn->prepare("INSERT INTO users " .
         "(fname,lname, phone, email, password, role) " .
         "VALUES (?, ?, ?, ?, ?, ?)");
 
-    // hash รหัสผ่านก่อนที่จะ insert ลงฐานข้อมูล
     $hashedPassword = password_hash($bodyArr['password'], PASSWORD_DEFAULT);
 
     // bind ค่าจาก array ที่รับมาเป็น parameter
@@ -97,6 +94,36 @@ $app->post('/users/login', function (Request $request, Response $response, array
             "message" => "ไม่พบผู้ใช้ที่มี email นี้"
         ]));
     }
+
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+//users members
+$app->get('/users/members', function (Request $request, Response $response, array $args) {
+    // เชื่อมต่อฐานข้อมูล
+    $conn = $GLOBALS['conn'];
+
+    // สร้าง SQL สำหรับดึงข้อมูลสมาชิก
+    $sql = "SELECT fname, lname, phone, email FROM users WHERE role = 'member'";
+
+    // เตรียมคำสั่ง SQL
+    $stmt = $conn->prepare($sql);
+    
+    // ดำเนินการคำสั่ง SQL
+    $stmt->execute();
+    
+    // ดึงผลลัพธ์จากฐานข้อมูล
+    $result = $stmt->get_result();
+
+    // สร้าง array สำหรับเก็บข้อมูล
+    $members = [];
+
+    while ($row = $result->fetch_assoc()) {
+        $members[] = $row;  // เพิ่มผลลัพธ์ใน array
+    }
+
+    // ส่งผลลัพธ์กลับไปในรูปแบบ JSON
+    $response->getBody()->write(json_encode($members));
 
     return $response->withHeader('Content-Type', 'application/json');
 });
