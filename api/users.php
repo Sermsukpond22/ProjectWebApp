@@ -127,3 +127,97 @@ $app->get('/users/members', function (Request $request, Response $response, arra
 
     return $response->withHeader('Content-Type', 'application/json');
 });
+
+
+ //ผู้ใช้แก้ไขข้อมูส่วนตัว
+$app->put('/users/{id}/update', function (Request $request, Response $response, array $args) { 
+    $conn = $GLOBALS['conn'];
+
+    // รับค่า user_id จาก URL
+    $user_id_from_url = $args['id'];
+
+    // รับข้อมูลจาก body
+    $body = $request->getBody();
+    $bodyArr = json_decode($body, true);
+
+    // ตรวจสอบว่ามีการส่งข้อมูลที่จำเป็นมาหรือไม่
+    if (!isset($bodyArr['first_name'], $bodyArr['last_name'], $bodyArr['phone'], $bodyArr['email'], $bodyArr['password'])) {
+        $response->getBody()->write(json_encode(["error" => "กรุณาระบุข้อมูลให้ครบถ้วน"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+    }
+
+    $first_name = $bodyArr['first_name'];
+    $last_name = $bodyArr['last_name'];
+    $phone = $bodyArr['phone'];
+    $email = $bodyArr['email'];
+    $password = password_hash($bodyArr['password'], PASSWORD_DEFAULT); // เข้ารหัสรหัสผ่านใหม่
+
+    // ตรวจสอบว่าผู้ใช้มีบทบาทเป็น member หรือไม่
+    $stmt = $conn->prepare("SELECT * FROM Users WHERE user_id = ? AND role = 'member'");
+    $stmt->bind_param("i", $user_id_from_url);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+
+    if (!$user) {
+        $response->getBody()->write(json_encode(["error" => "ไม่พบผู้ใช้หรือสิทธิ์ไม่เพียงพอ"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(403);
+    }
+
+    // ตรวจสอบว่าอีเมลซ้ำกันหรือไม่ (ยกเว้นผู้ใช้ปัจจุบัน)
+    $stmt = $conn->prepare("SELECT * FROM Users WHERE email = ? AND user_id != ?");
+    $stmt->bind_param("si", $email, $user_id_from_url);
+    $stmt->execute();
+    if ($stmt->get_result()->num_rows > 0) {
+        $response->getBody()->write(json_encode(["error" => "อีเมลนี้ถูกใช้ไปแล้ว"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(409);
+    }
+
+    // อัปเดตข้อมูลส่วนตัว
+    $stmt = $conn->prepare("UPDATE Users SET fname = ?, lname = ?, phone = ?, email = ?, password = ? WHERE user_id = ?");
+    $stmt->bind_param("sssssi", $first_name, $last_name, $phone, $email, $password, $user_id_from_url);
+    $stmt->execute();
+
+    if ($stmt->affected_rows > 0) {
+        $response->getBody()->write(json_encode(["message" => "แก้ไขข้อมูลสำเร็จ"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    } else {
+        $response->getBody()->write(json_encode(["error" => "ไม่สามารถแก้ไขข้อมูลได้"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+    }
+});
+
+//แสดงการจอง ของ members ที่ login เข้ามา
+$app->get('/users/{id}/reservations', function (Request $request, Response $response, array $args) { 
+    $conn = $GLOBALS['conn'];
+
+    // รับค่า user_id จาก URL
+    $user_id_from_url = $args['id'];
+
+    // ดึงข้อมูลการจองของผู้ใช้จากฐานข้อมูล
+    $stmt = $conn->prepare("
+        SELECT 
+            b.booth_name, 
+            z.zone_name, 
+            r.payment_status, 
+            r.status, 
+            b.price
+        FROM 
+            Reservations r
+        JOIN 
+            Booths b ON r.booth_id = b.booth_id
+        JOIN 
+            Zones z ON b.zone_id = z.zone_id
+        WHERE 
+            r.user_id = ?");
+    $stmt->bind_param("i", $user_id_from_url);
+    $stmt->execute();
+    $reservations = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+    if (count($reservations) > 0) {
+        $response->getBody()->write(json_encode($reservations));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    } else {
+        $response->getBody()->write(json_encode(["message" => "ไม่พบข้อมูลการจอง"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+    }
+});

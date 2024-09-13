@@ -219,3 +219,118 @@ $app->put('/reservations/approve', function (Request $request, Response $respons
     }
     return $response->withHeader('Content-Type', 'application/json');
 });
+
+$app->put('/reservations/cancel/{reservation_id}', function (Request $request, Response $response, array $args) {
+    $conn = $GLOBALS['conn'];
+    $reservationId = $args['reservation_id'];
+
+    // ดึงข้อมูลบูธที่เชื่อมกับการจอง
+    $stmt = $conn->prepare("
+        SELECT booth_id 
+        FROM Reservations 
+        WHERE reservation_id = ?
+    ");
+    $stmt->bind_param("i", $reservationId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $reservation = $result->fetch_assoc();
+
+    if (!$reservation) {
+        $response->getBody()->write(json_encode(["error" => "ไม่พบการจองที่มี ID นี้"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+    }
+
+    $boothId = $reservation['booth_id'];
+
+    // เริ่มต้น Transaction
+    $conn->begin_transaction();
+
+    try {
+        // อัปเดตสถานะการจองเป็น "failed"
+        $stmt = $conn->prepare("UPDATE Reservations SET status = 'failed' WHERE reservation_id = ?");
+        $stmt->bind_param("i", $reservationId);
+        $stmt->execute();
+
+        // อัปเดตสถานะบูธเป็น "available"
+        $stmt = $conn->prepare("UPDATE Booths SET booth_status = 'available' WHERE booth_id = ?");
+        $stmt->bind_param("i", $boothId);
+        $stmt->execute();
+
+        // ยืนยันการเปลี่ยนแปลง
+        $conn->commit();
+        $response->getBody()->write(json_encode(["message" => "ยกเลิกการจองสำเร็จ และบูธถูกเปลี่ยนเป็นสถานะ 'available'"]));
+
+    } catch (Exception $e) {
+        // ยกเลิกการเปลี่ยนแปลงหากเกิดข้อผิดพลาด
+        $conn->rollback();
+        $response->getBody()->write(json_encode(["error" => "เกิดข้อผิดพลาด: " . $e->getMessage()]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+    }
+
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+$app->post('/reservations/payment-check', function (Request $request, Response $response, array $args) {
+    $conn = $GLOBALS['conn'];
+    
+    // รับค่า user_id และ event_id จาก body ของ request
+    $body = $request->getBody();
+    $bodyArr = json_decode($body, true);
+
+    if (!isset($bodyArr['reservation_id'])) {
+        $response->getBody()->write(json_encode(["error" => "กรุณาระบุ reservation_id"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+    }
+
+    $reservation_id = $bodyArr['reservation_id'];
+
+    // ดึงข้อมูลการจองและงานจากฐานข้อมูล
+    $stmt = $conn->prepare("
+        SELECT r.booth_id, r.status, e.start_date
+        FROM Reservations r
+        JOIN Events e ON e.event_id = (SELECT event_id FROM Booths WHERE booth_id = r.booth_id)
+        WHERE r.reservation_id = ?
+    ");
+    $stmt->bind_param("i", $reservation_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $reservation = $result->fetch_assoc();
+
+    if (!$reservation) {
+        $response->getBody()->write(json_encode(["error" => "ไม่พบการจองนี้"]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+    }
+
+    $currentDate = new DateTime(); // วันที่ปัจจุบัน
+    $startDate = new DateTime($reservation['start_date']); // วันที่เริ่มงาน
+    $daysDifference = $startDate->diff($currentDate)->days; // หาความแตกต่างของวันที่
+
+    // ตรวจสอบเงื่อนไขการชำระเงิน
+    if ($daysDifference < 5) {
+        // หากน้อยกว่า 5 วัน
+        $responseText = "ชำระเงินไม่ได้";
+        $newStatus = 'cancel_reserve';
+        $newBoothStatus = 'available';
+    } else {
+        // หากมากกว่าหรือเท่ากับ 5 วัน
+        $responseText = "ชำระเงินได้";
+        $newStatus = 'reserve';
+        $newBoothStatus = 'booked';
+    }
+
+    // อัปเดตสถานะการจองและบูธ
+    $updateReservation = $conn->prepare("UPDATE Reservations SET status = ? WHERE reservation_id = ?");
+    $updateReservation->bind_param("si", $newStatus, $reservation_id);
+    $updateReservation->execute();
+
+    $updateBooth = $conn->prepare("UPDATE Booths SET booth_status = ? WHERE booth_id = ?");
+    $updateBooth->bind_param("si", $newBoothStatus, $reservation['booth_id']);
+    $updateBooth->execute();
+
+    $response->getBody()->write(json_encode([
+        "message" => $responseText,
+        "reservation_status" => $newStatus,
+        "booth_status" => $newBoothStatus
+    ]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
